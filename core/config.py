@@ -9,7 +9,7 @@ WECHAT_WINDOW_TITLE = "微信"
 # 截图区域配置（相对于微信窗口）
 CHAT_AREA = {
     "left_offset": 500,      # 聊天区域左边距（跳过联系人列表）
-    "top_offset": 80,        # 聊天区域上边距（跳过标题栏）
+    "top_offset": 150,        # 聊天区域上边距（跳过标题栏）
     "right_offset": 20,      # 聊天区域右边距
     "bottom_offset": 300,    # 聊天区域下边距（跳过输入框）
 }

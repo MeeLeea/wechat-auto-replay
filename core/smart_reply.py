@@ -67,7 +67,7 @@ class ZhipuProvider(LLMProvider):
         self.api_key = api_key
         self.model = model
         self.base_url = base_url
-        self.system_prompt = "你是一个友好的聊天助手，请用简短自然、口语化的方式回复消息，回复不超过50个字。"
+        self.system_prompt = "你是人性化的聊天助手，请用简短自然、口语化的方式回复消息，回复不超过50个字，不需要透露自己是一个AI。"
     
     def generate_reply(self, message: str, context: list = None) -> Optional[str]:
         try:

@@ -158,63 +158,53 @@ class ChatMessageParser:
         self.ocr = ocr
         self.use_easyocr = ocr.use_easyocr
         
-        # 微信气泡颜色阈值
-        # 白色气泡（对方消息）：RGB接近 (255, 255, 255)
-        # 绿色气泡（自己消息）：RGB接近 (95, 180, 75) 或 (149, 237, 105)
-        self.white_threshold = 200  # RGB平均值大于此值认为是白色
-        self.green_min_r = 50       # 绿色气泡R值范围
-        self.green_max_r = 180
-        self.green_min_g = 150      # 绿色气泡G值较高
-        self.green_max_g = 250
-        self.green_min_b = 50       # 绿色气泡B值范围
-        self.green_max_b = 150
+        # 微信绿色气泡颜色参考值 (149, 237, 105)
+        # 判定条件：G 通道值高且明显大于 R 和 B
+        self.green_g_min = 140            # 绿色 G 通道最小值
+        self.green_dominance = 20          # G 比 R/B 大于此值才认定为绿色
     
     def _detect_bubble_color(self, image: Image.Image, bbox) -> str:
         """
         检测气泡背景颜色
         
-        Args:
-            image: 原始图片
-            bbox: 文字边界框
-            
-        Returns:
-            "other" - 白色气泡（对方消息）
-            "self" - 绿色气泡（自己消息）
-            "unknown" - 无法判断
+        通过统计文字区域周围的颜色像素来判断：
+        - 存在大量绿色像素 -> 自己发送（绿色气泡）
+        - 几乎无绿色像素 -> 对方发送（白色气泡）
         """
         if image.mode != 'RGB':
             image = image.convert('RGB')
         
         img_array = np.array(image)
+        img_height, img_width = img_array.shape[:2]
         
-        # 获取边界框坐标
+        # 获取文本区域坐标
         if self.use_easyocr:
-            # EasyOCR bbox: [[x1,y1], [x2,y2], [x3,y3], [x4,y4]]
             x_coords = [int(point[0]) for point in bbox]
             y_coords = [int(point[1]) for point in bbox]
-            min_x = min(x_coords)
-            max_x = max(x_coords)
-            min_y = min(y_coords)
-            max_y = max(y_coords)
+            min_x, max_x = min(x_coords), max(x_coords)
+            min_y, max_y = min(y_coords), max(y_coords)
         else:
-            # Tesseract bbox: [(x1,y1), (x2,y1), (x2,y2), (x1,y2)]
             min_x = int(bbox[0][0])
             max_x = int(bbox[1][0])
             min_y = int(bbox[0][1])
             max_y = int(bbox[2][1])
         
-        # 扩展区域以包含气泡背景（向左扩展更多，因为气泡在文字左侧）
-        padding_left = 30
-        padding_right = 10
-        padding_top = 15
-        padding_bottom = 15
+        text_width = max_x - min_x
+        text_height = max_y - min_y
         
-        # 确保坐标在图片范围内
-        img_height, img_width = img_array.shape[:2]
-        left = max(0, min_x - padding_left)
-        right = min(img_width, max_x + padding_right)
-        top = max(0, min_y - padding_top)
-        bottom = min(img_height, max_y + padding_bottom)
+        if text_width <= 0 or text_height <= 0:
+            return "unknown"
+        
+        # 扩大采样区域 - 关键是要包含气泡背景
+        # 绿色气泡的 padding 通常在左侧较大
+        # 使用较大的 padding 确保能采到气泡颜色
+        padding_h = max(40, int(text_height * 1.2))
+        padding_v = max(15, int(text_height * 0.5))
+        
+        left = max(0, min_x - padding_h)
+        right = min(img_width, max_x + 20)
+        top = max(0, min_y - padding_v)
+        bottom = min(img_height, max_y + padding_v)
         
         if right <= left or bottom <= top:
             return "unknown"
@@ -225,47 +215,48 @@ class ChatMessageParser:
         if bubble_region.size == 0:
             return "unknown"
         
-        # 计算区域内的主要颜色
-        # 排除文字区域（取边缘像素）
-        edge_pixels = []
+        # 分离RGB通道，统计颜色
+        r = bubble_region[:, :, 0].astype(int)
+        g = bubble_region[:, :, 1].astype(int)
+        b = bubble_region[:, :, 2].astype(int)
         
-        # 取左侧边缘像素（气泡背景）
-        if left + 5 < right:
-            left_edge = bubble_region[:, :5]
-            edge_pixels.extend(left_edge.reshape(-1, 3).tolist())
+        # 统计绿色像素（绿色气泡特征：G值高且大于R和B）
+        # 微信绿色: 大约 (149, 237, 105)
+        green_mask = (
+            (g >= self.green_g_min) &
+            (g > r + self.green_dominance) &
+            (g > b + self.green_dominance)
+        )
+        green_count = int(np.sum(green_mask))
         
-        # 取顶部边缘像素
-        if top + 5 < bottom:
-            top_edge = bubble_region[:5, :]
-            edge_pixels.extend(top_edge.reshape(-1, 3).tolist())
+        total = bubble_region.shape[0] * bubble_region.shape[1]
+        green_ratio = green_count / total if total > 0 else 0
         
-        if not edge_pixels:
-            # 如果没有边缘像素，取整个区域的平均颜色
-            avg_color = np.mean(bubble_region.reshape(-1, 3), axis=0)
-        else:
-            avg_color = np.mean(edge_pixels, axis=0)
-        
-        r, g, b = avg_color
-        
-        # 判断颜色类型
-        # 白色气泡：RGB都接近255
-        avg_rgb = (r + g + b) / 3
-        if avg_rgb > self.white_threshold:
-            return "other"
-        
-        # 绿色气泡：G值高，R和B值较低
-        if (self.green_min_r <= r <= self.green_max_r and
-            self.green_min_g <= g <= self.green_max_g and
-            self.green_min_b <= b <= self.green_max_b and
-            g > r and g > b):
+        # 决策：区域内有足够多的绿色像素 -> 自己发送
+        if green_ratio > 0.15:
             return "self"
         
-        # 如果G值明显高于R和B，也可能是绿色
-        if g > r + 30 and g > b + 30:
-            return "self"
-        
-        return "unknown"
+        # 否则认为是对方发送的（白色气泡）
+        return "other"
     
+    def _is_time_label(self, text: str) -> bool:
+        """
+        判断是否为时间标签（如 "16:50", "上午 10:30"）
+        时间标签不是消息，需要过滤
+        """
+        import re
+        cleaned = text.strip()
+        # 匹配 HH:MM 格式
+        if re.match(r"^\d{1,2}:\d{2}$", cleaned):
+            return True
+        # 匹配 "上午/下午/早上/晚上 HH:MM" 格式
+        if re.match(r"^(上午|下午|早上|晚上|凌晨|清晨)\s*\d{1,2}:\d{2}$", cleaned):
+            return True
+        # 匹配 "昨天/今天 HH:MM" 格式
+        if re.match(r"^(昨天|今天|前天|周一|周二|周三|周四|周五|周六|周日)\s*\d{1,2}:\d{2}$", cleaned):
+            return True
+        return False
+
     def parse_messages(self, image: Image.Image) -> List[dict]:
         """
         解析聊天截图中的消息
@@ -291,6 +282,10 @@ class ChatMessageParser:
         for item in ocr_results:
             text = item["text"].strip()
             if not text:
+                continue
+            
+            # 过滤时间标签
+            if self._is_time_label(text):
                 continue
             
             bbox = item["bbox"]
