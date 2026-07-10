@@ -1,6 +1,0 @@
-{
-    "provider": "zhipu",
-    "api_key": "xxx",
-    "model": "glm-4",
-    "base_url": ""
-}
