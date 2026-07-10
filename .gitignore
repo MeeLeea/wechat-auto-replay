@@ -49,3 +49,5 @@ Thumbs.db
 # Project specific
 calibrate_*.png
 *.log
+
+llm_config.json
